@@ -1,0 +1,227 @@
+---
+title: "Informe - PEC1"
+author: "Jone"
+date: "2025-03-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Análisis de datos ómicos PEC1
+
+A continuación, se detallan las tareas que debéis llevar a cabo:
+
+**1. Seleccionad y descargad un dataset de metabolómica, que podéis obtener de metabolomicsWorkbench o de este repositorio de GitHub.**
+
+En mi caso, he escogido el dataset ST000291.
+
+En este estudio fueron reclutadas 18 mujeres universitarias sanas, de entre 21 y 29 años, con un índice de masa corporal (IMC) normal entre 18.5 y 25.
+
+A cada participante se le proporcionó una lista de alimentos que contenían cantidades significativas de procianidinas, como arándanos, manzanas, uvas, chocolate y ciruelas. Se les recomendó evitar estos alimentos desde el día 1 al 6 y durante el resto del estudio.
+
+En la mañana del día 7, se recogieron muestras de orina y de sangre de todas las participantes tras un ayuno nocturno. Posteriormente, se asignó aleatoriamente a las participantes en dos grupos (n=9) para consumir jugo de arándano rojo o jugo de manzana. Se les entregaron seis botellas (250 ml cada una) de jugo para que las consumieran por la mañana y por la noche durante los días 7, 8 y 9.
+
+En la mañana del día 10, todas las participantes regresaron a la unidad clínica para entregar una muestra de orina matutina tras el ayuno nocturno. También se recogió una muestra de sangre 30 minutos después de que bebieran otra botella de jugo por la mañana.
+
+Tras un período de "lavado" (*wash out*) de dos semanas, las participantes cambiaron al régimen alternativo y repitieron el protocolo. Una participante fue excluida del estudio por faltar a parte de sus citas. Otras dos fueron eliminadas del análisis metabolómico de orina por no haber proporcionado las muestras requeridas después de consumir el jugo.
+
+El presente estudio tuvo como objetivo investigar los cambios metabólicos generales provocados por concentrados de procianidinas provenientes de arándanos rojos y manzanas, utilizando un enfoque metabolómico global basado en LC-MS. Todas las muestras de plasma y orina fueron almacenadas a -80 °C hasta su análisis.
+
+2.  **Cread un objeto de clase SummarizedExperiment que contenga los datos y los metadatos (información acerca del dataset, sus filas y columnas). La clase SummarizedExperiment es una extensión de ExpressionSet, utilizada por muchas aplicaciones y bases de datos (como es el caso de metabolomicsWorkbench). ¿Cuáles son sus principales diferencias con la clase ExpressionSet?**
+
+La clase **SummarizedExperiment** se utiliza para almacenar matrices rectangulares de resultados experimentales, que suelen generarse en experimentos de secuenciación y microarrays. Cabe destacar que **SummarizedExperiment** puede gestionar simultáneamente varios conjuntos de resultados experimentales o ensayos, siempre que tengan las mismas dimensiones.
+
+Cada objeto almacena observaciones de una o más muestras, junto con metadatos adicionales que describen tanto las observaciones (**características**) como las muestras (**fenotipos**).
+
+Un aspecto clave de la clase **SummarizedExperiment** es la **coordinación de los metadatos y los ensayos al realizar subconjuntos**. Por ejemplo, si se desea excluir una muestra determinada, se puede hacer en una sola operación para tanto los metadatos como los ensayos, lo que garantiza que ambos se mantengan sincronizados. No gestionar adecuadamente los datos observacionales y los metadatos ha dado lugar a numerosos errores en los resultados e incluso a retractaciones de estudios, por lo que esta característica es altamente deseable.
+
+**SummarizedExperiment** es, en muchos aspectos, similar a la clase histórica **ExpressionSet**, pero con la diferencia principal de que **SummarizedExperiment** es más flexible en cuanto a la información de las filas, permitiendo tanto representaciones basadas en **GRanges** como en **DataFrames** arbitrarios. Esto lo hace ideal para una variedad de experimentos, especialmente aquellos basados en secuenciación, como **RNA-Seq** y **ChIP-Seq**.
+
+En este caso, crearé un `SummarizedExperiment` con 3 fuentes de datos: features usado para assays, metadata usado para colData y metaboliteNames usado para rowData.
+
+<chrome-extension://efaidnbmnnnibpcajpcglclefindmkaj/https://openaccess.uoc.edu/bitstream/10609/98487/9/acorralboTFM0619memoria.pdf>
+
+<https://comunidadbioinfo.github.io/minicurso_abr_2021/Slides/Slides.html#111>
+
+------------------------------------------------------------------------
+
+```{r}
+# Cargamos el paquete readxl, que permite leer archivos Excel directamente, sin necesidad de convertirlos antes a .csv
+library(readxl)
+
+# Cargamos el dataset y extraemos las pestañas 
+features_data <- read_excel("C:/Users/joneo/Downloads/ST000291noNAs.xlsx", sheet = "features")
+
+# La pestaña metadata será muy útil para el colData del objeto SummarizedExperiment
+metadata <- read_excel("C:/Users/joneo/Downloads/ST000291noNAs.xlsx", sheet = "metadata")
+
+# La pestaña metaboliteNames servirá para construir el rowData, que contiene información descriptiva de cada metabolito
+metabolite_names <- read_excel("C:/Users/joneo/Downloads/ST000291noNAs.xlsx", sheet = "metaboliteNames")
+
+# Ver los primeros registros de cada tabla
+head(features_data)
+head(metadata)
+head(metabolite_names)
+
+```
+
+Ahora empezaremos a preparar los datos para crear el SummarizedExperiment
+
+```{r}
+library(SummarizedExperiment)
+
+# Aseguramos de que ambos PubChemID tengan el mismo tipo de dato para hacer el merge
+features_data$PubChemID <- as.character(features_data$PubChemID)
+metabolite_names$PubChemID <- as.character(metabolite_names$PubChemID)
+
+# Unir los nombres de metabolitos (names) con la tabla de expresión features_data
+features_data2 <- merge(
+  metabolite_names[, c("PubChemID", "names")],
+  features_data,
+  by = "PubChemID"
+)
+
+# Eliminamos columnas innecesarias y asignamos rownames
+features_data2 <- features_data2[ , -which(names(features_data2) == "PubChemID")]
+rownames(features_data2) <- features_data2$names
+features_data2 <- features_data2[ , -which(names(features_data2) == "names")]
+
+#  Convertir el data.frame en una matriz, necesaria para el assay del SummarizedExperiment
+matriz <- as.matrix(features_data2)
+features_data2
+matriz
+```
+
+```{r}
+# Preparar colData (metadata de muestras)
+
+# Convertimos el data.frame metadata (que viene de la hoja Excel "metadata") en un DataFrame de Bioconductor, que es compatible con SummarizedExperiment
+colData <- DataFrame(metadata)
+
+#Asignamos los nombres de fila (rownames) de colData usando la columna "sampleID" (ej.: b1, b10, b11...). Esto es importante porque colData debe tener nombres de fila que coincidan exactamente con los nombres de columna de la matriz de expresión (matriz)
+rownames(colData) <- colData$sampleID
+
+colData
+```
+
+```{r}
+#Como ya estás usando los nombres como rownames(matriz), ahora puedes agregar el resto de info desde metabolite_names, si quieres tener PubChemID, KEGG, etc. por cada metabolito:
+
+# Aseguramos de que la columna 'names' está como character
+metabolite_names$names <- as.character(metabolite_names$names)
+
+# Extraemos solo las filas de metabolite_names que coinciden con los nombres de fila de la matriz 
+rowData <- metabolite_names[match(rownames(matriz), metabolite_names$names), ]
+
+# Convertir a DataFrame 
+rowData <- DataFrame(rowData)
+
+# Asigna como nombres de fila los nombres de los metabolitos, igual que en la matriz
+rownames(rowData) <- rowData$names
+rowData
+```
+
+**Preparar los datos**: Dependiendo de cómo estén organizados los datos en cada hoja, es posible que necesites transformar o ajustar algunas columnas.
+
+-   **Features**: Usualmente, esta es una matriz o data frame con las filas correspondientes a las observaciones y las columnas a las características o variables medidas.
+
+-   **Metadata**: Esto debe ser una tabla con metainformación que describa las filas de `features`, como las condiciones experimentales, grupos, etc.
+
+-   **MetaboliteNames**: Debe ser un vector de nombres de los metabolitos, correspondiente a las columnas de la matriz `features`.
+
+En este paso, estamos asociando las filas de `features` con los nombres de metabolitos y las columnas con las muestras. También estamos creando los `colData` (metadatos de las muestras) y los `rowData` (información sobre los metabolitos).
+
+A continuación, creamos el objeto SummarizedExperiment: Ahora que tenemos todos los datos listos, podemos crear el objeto `SummarizedExperiment`:
+
+```{r}
+library(SummarizedExperiment)
+
+# Crear el objeto SummarizedExperiment
+se <- SummarizedExperiment(
+  assays = list(metabolitos = matriz),
+  rowData = rowData, 
+  colData = colData
+  ) # Datos de las mediciones de metabolitos
+se
+```
+
+Acceder a partes del objeto
+
+```{r}
+assay(se)
+```
+
+```{r}
+rowData(se)
+colData(se)
+```
+
+Análisis Exploratorio del `SummarizedExperiment`
+
+1\. Dimensiones y estructura general
+
+```{r}
+se
+dim(se)
+assayNames(se)
+```
+
+Estadísticas descriptivas del `assay` (datos de metabolitos)
+
+```{r}
+matriz <- assay(se)
+matriz <- apply(matriz, 2, as.numeric)
+matriz <- as.matrix(matriz)
+
+# Rango de valores
+summary(as.vector(matriz))
+
+# Ver si hay valores extremos o ceros
+hist(as.vector(matriz), main = "Distribución de intensidades", xlab = "Intensidad", breaks = 50)
+
+# Boxplot por muestra (opcionalmente log-transformar)
+boxplot(log1p(as.vector(matriz)), 
+        main = "Distribución log-transformada de intensidades", 
+        xlab = "log(Intensidad + 1)", 
+     breaks = 50)
+```
+
+Número de muestras por tratamiento
+
+```{r}
+table(colData(se)$Treatment)
+```
+
+#### PCA para explorar agrupamiento por tratamiento
+
+```{r}
+library(ggplot2)
+
+# Hacer PCA
+pca <- prcomp(t(log1p(matriz)), scale. = TRUE)  # transponer: muestras en filas
+
+# Construir data.frame para graficar
+pca_df <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  Treatment = colData(se)$Treatment
+)
+
+# Plot
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Treatment)) +
+  geom_point(size = 3) +
+  labs(title = "PCA de muestras", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+
+Correlación entre muestras
+
+```{r}
+cor_matriz <- cor(log1p(matriz))  # log1p para estabilizar varianza
+
+heatmap(cor_matriz, main = "Correlación entre muestras", symm = TRUE)
+```
+
+<https://carpentries-incubator.github.io/bioc-project/09-summarizedexperiment.html>
