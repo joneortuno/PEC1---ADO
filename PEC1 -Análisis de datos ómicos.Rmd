@@ -1,0 +1,502 @@
+---
+title: "Informe - PEC1"
+author: "Jone"
+date: "2025-03-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Análisis de datos ómicos PEC1
+
+A continuación, se detallan las tareas que debéis llevar a cabo:
+
+**1. Seleccionad y descargad un dataset de metabolómica, que podéis obtener de metabolomicsWorkbench o de este repositorio de GitHub.**
+
+En mi caso, he escogido el dataset ST000291.
+
+En este estudio fueron reclutadas 18 mujeres universitarias sanas, de entre 21 y 29 años, con un índice de masa corporal (IMC) normal entre 18.5 y 25.
+
+A cada participante se le proporcionó una lista de alimentos que contenían cantidades significativas de procianidinas, como arándanos, manzanas, uvas, chocolate y ciruelas. Se les recomendó evitar estos alimentos desde el día 1 al 6 y durante el resto del estudio.
+
+En la mañana del día 7, se recogieron muestras de orina y de sangre de todas las participantes tras un ayuno nocturno. Posteriormente, se asignó aleatoriamente a las participantes en dos grupos (n=9) para consumir jugo de arándano o jugo de manzana. Se les entregaron seis botellas (250 ml cada una) de jugo para que las consumieran por la mañana y por la noche durante los días 7, 8 y 9.
+
+En la mañana del día 10, todas las participantes regresaron a la unidad clínica para entregar una muestra de orina matutina tras el ayuno nocturno. También se recogió una muestra de sangre 30 minutos después de que bebieran otra botella de jugo por la mañana.
+
+Tras un período de "lavado" (*wash out*) de dos semanas, las participantes cambiaron al régimen alternativo y repitieron el protocolo. Una participante fue excluida del estudio por faltar a parte de sus citas. Otras dos fueron eliminadas del análisis metabolómico de orina por no haber proporcionado las muestras requeridas después de consumir el jugo.
+
+El presente estudio tuvo como objetivo investigar los cambios metabólicos generales provocados por concentrados de procianidinas provenientes de arándanos rojos y manzanas, utilizando un enfoque metabolómico global basado en LC-MS. Todas las muestras de plasma y orina fueron almacenadas a -80 °C hasta su análisis.
+
+2.  **Cread un objeto de clase SummarizedExperiment que contenga los datos y los metadatos (información acerca del dataset, sus filas y columnas). La clase SummarizedExperiment es una extensión de ExpressionSet, utilizada por muchas aplicaciones y bases de datos (como es el caso de metabolomicsWorkbench). ¿Cuáles son sus principales diferencias con la clase ExpressionSet?**
+
+La clase SummarizedExperiment se utiliza para almacenar matrices rectangulares de resultados experimentales, que suelen generarse en experimentos de secuenciación y microarrays. Cabe destacar que SummarizedExperiment puede gestionar simultáneamente varios conjuntos de resultados experimentales o ensayos, siempre que tengan las mismas dimensiones.
+
+Cada objeto almacena observaciones de una o más muestras, junto con metadatos adicionales que describen tanto las observaciones (características) como las muestras (fenotipos).
+
+Un aspecto clave de la clase SummarizedExperiment es la coordinación de los metadatos y los ensayos al realizar subconjuntos. Por ejemplo, si se desea excluir una muestra determinada, se puede hacer en una sola operación para tanto los metadatos como los ensayos, lo que garantiza que ambos se mantengan sincronizados. No gestionar adecuadamente los datos observacionales y los metadatos ha dado lugar a numerosos errores en los resultados e incluso a retractaciones de estudios, por lo que esta característica es altamente deseable.
+
+SummarizedExperiment es, en muchos aspectos, similar a la clase histórica ExpressionSet, pero con la diferencia principal de que SummarizedExperiment es más flexible en cuanto a la información de las filas, permitiendo tanto representaciones basadas en GRanges como en DataFrames arbitrarios. Esto lo hace ideal para una variedad de experimentos, especialmente aquellos basados en secuenciación, como RNA-Seq y ChIP-Seq.
+
+En este caso, crearé un SummarizedExperiment con 3 fuentes de datos: features usado para assays, metadata usado para colData y metaboliteNames usado para rowData.
+
+```{r}
+# Cargamos el paquete readxl, que permite leer archivos Excel directamente, sin necesidad de convertirlos antes a .csv
+library(readxl)
+
+# Cargamos el dataset y extraemos las pestañas 
+features_data <- read_excel("C:/Users/joneo/Downloads/ST000291noNAs.xlsx", sheet = "features")
+
+# La pestaña metadata será muy útil para el colData de la clase SummarizedExperiment
+metadata <- read_excel("C:/Users/joneo/Downloads/ST000291noNAs.xlsx", sheet = "metadata")
+
+# La pestaña metaboliteNames servirá para construir el rowData, que contiene información descriptiva de cada metabolito
+metabolite_names <- read_excel("C:/Users/joneo/Downloads/ST000291noNAs.xlsx", sheet = "metaboliteNames")
+
+# Ver los primeros registros de cada tabla
+head(features_data)
+head(metadata)
+head(metabolite_names)
+
+```
+
+Ahora empezaremos a preparar los datos para crear el SummarizedExperiment.
+
+```{r}
+# Cargamos el paquete SummarizedExperiment
+library(SummarizedExperiment)
+
+# Convertimos la columna PubChemID en ambas tablas a tipo carácter (character) para evitar errores al hacer el merge.
+features_data$PubChemID <- as.character(features_data$PubChemID)
+metabolite_names$PubChemID <- as.character(metabolite_names$PubChemID)
+
+# Unimos los nombres de metabolitos (names) con la tabla de expresión features_data
+features_data2 <- merge(
+  metabolite_names[, c("PubChemID", "names")],
+  features_data,
+  by = "PubChemID"
+)
+
+# Eliminamos columnas innecesarias y asignamos rownames
+features_data2 <- features_data2[ , -which(names(features_data2) == "PubChemID")]
+rownames(features_data2) <- features_data2$names
+features_data2 <- features_data2[ , -which(names(features_data2) == "names")]
+
+#  Convertimos el data.frame en una matriz, necesaria para el assay del SummarizedExperiment
+matriz <- as.matrix(features_data2)
+features_data2
+matriz
+```
+
+Una vez tenemos la matriz de expresión, el siguiente paso es acabar de construir el objeto SummarizedExperiment. Es decir, preparar los metadatos de las muestras (colData) y los metadatos de los metabolitos (rowData).
+
+Preparar colData (metadata de muestras):
+
+```{r}
+
+# Convertimos el data.frame metadata (que viene de la hoja Excel "metadata") en un DataFrame de Bioconductor, que es compatible con SummarizedExperiment
+colData <- DataFrame(metadata)
+
+#Asignamos los nombres de fila (rownames) de colData usando la columna "sampleID" (ej.: b1, b10, b11...). Esto es importante porque colData debe tener nombres de fila que coincidan exactamente con los nombres de columna de la matriz de expresión (matriz)
+rownames(colData) <- colData$sampleID
+
+colData
+```
+
+Preparar rowData:
+
+```{r}
+#Como ya estamos usando los nombres como rownames(matriz), ahora podemos agregar el resto de info desde metabolite_names
+
+# Aseguramos de que la columna 'names' está como character
+metabolite_names$names <- as.character(metabolite_names$names)
+
+# Extraemos solo las filas de metabolite_names que coinciden con los nombres de fila de la matriz 
+rowData <- metabolite_names[match(rownames(matriz), metabolite_names$names), ]
+
+# Convertimos a DataFrame 
+rowData <- DataFrame(rowData)
+
+# Asignamos como nombres de fila los nombres de los metabolitos, igual que en la matriz
+rownames(rowData) <- rowData$names
+rowData
+```
+
+Una vez ya tenemos todos los componentes del SummarizedExperiment, podemos crear el objeto:
+
+```{r}
+
+library(SummarizedExperiment)
+
+# Creamos el objeto SummarizedExperiment
+se <- SummarizedExperiment(
+  assays = list(metabolitos = matriz),
+  rowData = rowData, 
+  colData = colData
+  ) 
+
+se
+
+```
+
+Podemos acceder a los componentes internos del objeto SummarizedExperiment de esta manera:
+
+```{r}
+assay(se)
+rowData(se)
+colData(se)
+```
+
+## Análisis Exploratorio del SummarizedExperiment:
+
+### **1. Dimensiones y estructura general**
+
+Como primer paso del análisis exploratorio, se examinó la estructura básica del objeto SummarizedExperiment:
+
+```{r}
+se
+dim(se)
+assayNames(se)
+```
+
+### **2. Gráfico de distribución de muestras**
+
+Luego, creamos un gráfico de distribución de muestras por tratamiento (por ejemplo, un barplot) ya que da una visión general de cómo están organizadas las muestras según las condiciones experimentales del estudio.
+
+```{r}
+library(ggplot2)
+
+df_tratamiento <- as.data.frame(colData(se))  
+
+grafico_muestras <- ggplot(df_tratamiento, aes(x = Treatment, fill = Treatment)) +
+  geom_bar() +
+  labs(title = "Distribución de muestras por tratamiento",
+       x = "Tratamiento", y = "Número de muestras") +
+  theme_minimal()
+
+grafico_muestras
+
+#Para guardar la imagen en mi ordenador
+ggsave("grafico_distribucion_muestras.png", plot = grafico_muestras,
+       width = 8, height = 6, dpi = 300)
+
+```
+
+### 3. PCA para explorar agrupamiento por tratamiento
+
+PCA es una herramienta súper potente para el análisis exploratorio, especialmente en estudios de metabolómica. Esta tecnica se utiliza para: reducir la dimensionalidad de los datos, visualizar patrones y agrupamientos entre muestras, detectar similitudes o diferencias entre tratamientos, e identificar posibles outliers.
+
+```{r}
+library(ggplot2)
+
+# Hacemos el PCA.La función t() transpone la matriz para cumplir con el formato requerido por prcomp(), donde cada fila representa una muestra y cada columna un metabolito
+
+# También se utilizó scale. = TRUE para escalar las variables, ya que los metabolitos pueden tener escalas muy distintas entre sí
+pca <- prcomp(t(log1p(matriz)), scale. = TRUE)  
+
+# Construimos el data.frame para graficar. Los dos primeros componentes principales (PC1 y PC2) se representaron gráficamente para evaluar la posible separación entre tratamientos:
+pca_df <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  Treatment = colData(se)$Treatment
+)
+
+# Construimos el grafico que permitirá identificar si existe una tendencia a que las muestras se agrupen según el tratamiento
+pca_grafico <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Treatment)) +
+  geom_point(size = 3) +
+  labs(title = "PCA de muestras", x = "PC1", y = "PC2") +
+  theme_minimal()
+
+pca_grafico
+
+ggsave("pca_grafico.png", plot = pca_grafico, width = 8, height = 6, dpi = 300)
+```
+
+### **4. Resumen estadístico general de las intensidades**
+
+En la matriz assay(se), cada valor representa la intensidad o cantidad relativa de un metabolito en una muestra, medida por LC-MS. Por tanto, para cacular estadísticos básicos (media, mediana, desviación estándar, etc) que describan la distribución general de todos esos valores, necesitamos hacer un resumen estadístico general de las intensidades.
+
+Como la matriz assay(se) contiene valores en formato texto ("character"), eso impide hacer el análisis estadístico, por lo que vamos a convertirlo a numérico.
+
+```{r}
+#Vamos a convertir toda la matriz a formato numérico, sin perder los nombres de las filas y columnas (muy importante para mantener la integridad del objeto SummarizedExperiment)
+
+# Guardar los nombres de filas y columnas
+rownames_orig <- rownames(assay(se))
+colnames_orig <- colnames(assay(se))
+
+# Convertir a numérico
+expr_numeric <- apply(assay(se), 2, as.numeric)
+
+# Volvemos a asignar los nombres de las filas y de las columnas
+rownames(expr_numeric) <- rownames_orig
+colnames(expr_numeric) <- colnames_orig
+
+# Reasignamos al objeto SummarizedExperiment la nueva matriz numérica
+assay(se) <- expr_numeric
+
+summary(as.vector(assay(se)))
+```
+
+### **5. ANÁLISIS DIFERENCIAL**
+
+¿Qué metabolitos cambian significativamente entre tratamientos? Por ejemplo, ¿qué metabolitos se alteran con el consumo de zumo de manzana vs. zumo de arándano?
+
+***5.1. APPLE VS. BASELINE***
+
+```{r}
+# Obtenemos la matriz de expresión y los metadatos que extraemos del summarizedexperiment
+expr <- assay(se)
+meta <- colData(se)
+
+# Verificamos que los nombres de las columnas de la matriz coincidan con los IDs de muestra del metadato
+all(colnames(expr) == meta$sampleID)  
+
+# Seleccionamos solo las muestras que corresponden a los tratamientos Apple y Baseline
+sel <- meta$Treatment %in% c("Apple", "Baseline")
+expr_sub <- expr[, sel]
+meta_sub <- meta[sel, ]
+
+# Extraemos vector de tratamientos en el mismo orden que las columnas
+grupo <- as.character(meta_sub$Treatment)
+
+# Aplicamos una prueba t pareada a cada metabolito, comparando los valores entre los tratamientos. Usamos la prueba t pareada ya que estamos comparando dos condiciones dentro de un mismo sujeto
+res_ttest <- apply(expr_sub, 1, function(x) {
+  apple_vals <- x[grupo == "Apple"]
+  base_vals  <- x[grupo == "Baseline"]
+  
+  # test pareado
+  if (length(apple_vals) == length(base_vals)) {
+    t.test(apple_vals, base_vals, paired = TRUE)
+  } else {
+    return(NULL) 
+  }
+})
+
+# Calculamos para cada metabolito el p valor de la prueba t, la diferencia de medias entre tratamientos y el fold change
+pvalues <- sapply(res_ttest, function(x) if (!is.null(x)) x$p.value else NA)
+mean_diff <- rowMeans(expr_sub[, grupo == "Apple"]) - rowMeans(expr_sub[, grupo == "Baseline"])
+foldchange <- rowMeans(expr_sub[, grupo == "Apple"]) / rowMeans(expr_sub[, grupo == "Baseline"])
+
+# Creamos vector con tratamientos
+grupo <- meta_sub$Treatment
+
+# Creamos una tabla con todos los resultados del análisis para cada metabolito
+resultados <- data.frame(
+  Metabolito = rownames(expr),
+  p_value = pvalues,
+  diferencia_media = mean_diff,
+  fold_change = foldchange
+)
+
+# Ordenamos por significancia
+
+library(dplyr)
+
+resultados_sig <- resultados %>%
+  filter(!is.na(p_value)) %>%
+  arrange(p_value)
+
+#Esto crea una nueva columna llamada Metabolito que tiene los nombres de cada fila (los que coinciden con los de resultados).
+metainfo <- as.data.frame(rowData(se)) %>%
+  tibble::rownames_to_column(var = "Metabolito")
+
+res_final <- left_join(resultados_sig, metainfo, by = c("Metabolito"))
+res_final
+```
+
+A continuación, graficamos el resultado de la tabla anterior con un gráfico estilo volcano plot.
+
+```{r}
+library(ggplot2)
+
+# Usamos la funcion mutate() para crear tres nuevas columnas dentro del dataframe res_final. 
+# log2FC: calcula el logaritmo en base 2 del fold change, lo que permite representar aumentos/disminuciones simétricamente (positivo si sube con Apple, negativo si baja)
+
+# neg_log10_p: calcula el –log₁₀(p-valor), lo que transforma valores de p pequeños (más significativos) en números grandes, facilitando su visualización en el eje Y
+
+# significativo: clasifica cada metabolito como "Significativo" si p < 0.05 y |log₂FC| > 1
+
+res_final <- res_final %>%
+  mutate(
+    log2FC = log2(fold_change),
+    neg_log10_p = -log10(p_value),
+    significativo = ifelse(p_value < 0.05 & abs(log2FC) > 1, "Significativo", "No significativo")
+  )
+
+#Generamos el volcano plot
+
+ggplot(res_final, aes(x = log2FC, y = neg_log10_p)) +
+  geom_point(aes(color = significativo), alpha = 0.8, size = 3) +
+  scale_color_manual(values = c("Significativo" = "red", "No significativo" = "grey")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  labs(
+    title = "Volcano Plot - Apple vs Baseline",
+    x = "log2(Fold Change)",
+    y = "–log10(p-value)",
+    color = "Significancia"
+  ) +
+  theme_minimal()
+```
+
+**Puntos rojos**: metabolitos con diferencias estadísticamente significativas y biológicamente relevantes. Puntos grises no significativos.
+
+```{r}
+metabolitos_significativos <- res_final %>%
+  filter(significativo == "Significativo") %>%
+  arrange(p_value)
+
+head(metabolitos_significativos, 10)  # top 10 más significativos
+
+```
+
+```{r}
+#Mismo gráfico pero con etiquetas
+
+install.packages("ggrepel")  
+library(ggrepel)
+library(dplyr)
+library(ggplot2)
+
+top_metabolitos <- res_final %>%
+  filter(significativo == "Significativo") %>%
+  arrange(p_value) %>%
+  slice(1:10)
+
+volcano_apple_baseline <- ggplot(res_final, aes(x = log2FC, y = neg_log10_p)) +
+  geom_point(aes(color = significativo), alpha = 0.8, size = 3) +
+  scale_color_manual(values = c("Significativo" = "red", "No significativo" = "grey")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(data = top_metabolitos,
+                  aes(label = Metabolito),
+                  size = 3.5, max.overlaps = 15) +
+  labs(
+    title = "Volcano Plot - Apple vs Baseline",
+    x = "log2(Fold Change)",
+    y = "–log10(p-value)",
+    color = "Significancia"
+  ) +
+  theme_minimal()
+
+volcano_apple_baseline
+
+ggsave("volcano_apple_baseline.png", plot = volcano_apple_baseline, width = 10, height = 8, dpi = 300)
+
+```
+
+***5.2. CRANBERRY VS BASELINE***
+
+Se sigue el mismo proceso que en el apartado anterior.
+
+```{r}
+expr <- assay(se)
+meta <- colData(se)
+
+analisis_diferencial <- function(expr, meta, grupo1, grupo2, contraste_nombre) {
+  library(dplyr)
+  
+  # Filtramos las muestras de los grupos indicados
+  sel <- meta$Treatment %in% c(grupo1, grupo2)
+  expr_sub <- expr[, sel]
+  meta_sub <- meta[sel, ]
+  grupo <- as.character(meta_sub$Treatment)
+  
+  # t-test pareado por metabolito
+  res_ttest <- apply(expr_sub, 1, function(x) {
+    x1 <- x[grupo == grupo1]
+    x2 <- x[grupo == grupo2]
+    if (length(x1) == length(x2)) {
+      t.test(x1, x2, paired = TRUE)
+    } else {
+      return(NULL)
+    }
+  })
+  
+  # Extraemos las métricas
+  pvalues <- sapply(res_ttest, function(x) if (!is.null(x)) x$p.value else NA)
+  mean_diff <- rowMeans(expr_sub[, grupo == grupo1]) - rowMeans(expr_sub[, grupo == grupo2])
+  foldchange <- rowMeans(expr_sub[, grupo == grupo1]) / rowMeans(expr_sub[, grupo == grupo2])
+  
+  # Formamos la tabla
+  resultados <- data.frame(
+    Metabolito = rownames(expr_sub),
+    p_value = pvalues,
+    diferencia_media = mean_diff,
+    fold_change = foldchange
+  ) %>%
+    mutate(
+      log2FC = log2(fold_change),
+      neg_log10_p = -log10(p_value),
+      significativo = ifelse(p_value < 0.05 & abs(log2FC) > 1, "Significativo", "No significativo"),
+      Contraste = contraste_nombre
+    )
+  
+  return(resultados)
+}
+```
+
+```{r}
+res_cranberry_baseline <- analisis_diferencial(expr, meta, "Cranberry", "Baseline", "Cranberry vs Baseline")
+res_cranberry_baseline
+```
+
+```{r}
+res_cranberry_apple <- analisis_diferencial(expr, meta, "Cranberry", "Apple", "Cranberry vs Apple")
+res_cranberry_apple
+```
+
+Volcano plot: Cranberry vs Baseline
+
+```{r}
+# 1. Primero vamos a obtener los metabolitos más significativos
+library(ggrepel)
+library(ggplot2)
+
+top_cran_base <- res_cranberry_baseline %>%
+  filter(significativo == "Significativo") %>%
+  arrange(p_value) %>%
+  slice(1:10)
+
+# 2. Creamos el volcano plot
+volcano_cranberry_baseline <- ggplot(res_cranberry_baseline, aes(x = log2FC, y = neg_log10_p)) +
+  geom_point(aes(color = significativo), alpha = 0.8, size = 3) +
+  scale_color_manual(values = c("Significativo" = "red", "No significativo" = "grey")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_text_repel(data = top_cran_base, aes(label = Metabolito), size = 3.5, max.overlaps = 15) +
+  labs(title = "Volcano Plot - Cranberry vs Baseline",
+       x = "log2(Fold Change)", y = "–log10(p-value)", color = "Significancia") +
+  theme_minimal()
+
+plot_cran_base
+
+ggsave("volcano_cranberry_baseline.png", plot = volcano_cranberry_baseline, width = 10, height = 8, dpi = 300)
+```
+
+***5.3. APPLE VS CRANBERRY***
+
+Volcano plot: Cranberry vs Apple
+
+```{r}
+top_cran_apple <- res_cranberry_apple %>%
+  filter(significativo == "Significativo") %>%
+  arrange(p_value) %>%
+  slice(1:10)
+
+volcano_cran_apple <- ggplot(res_cranberry_apple, aes(x = log2FC, y = neg_log10_p)) +
+  geom_point(aes(color = significativo), alpha = 0.8, size = 3) +
+  scale_color_manual(values = c("Significativo" = "red", "No significativo" = "grey")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_text_repel(data = top_cran_apple, aes(label = Metabolito), size = 3.5, max.overlaps = 15) +
+  labs(title = "Volcano Plot - Cranberry vs Apple",
+       x = "log2(Fold Change)", y = "–log10(p-value)", color = "Significancia") +
+  theme_minimal()
+
+volcano_cran_apple
+
+ggsave("volcano_cran_apple.png", plot = volcano_cran_apple, width = 10, height = 8, dpi = 300)
+```
